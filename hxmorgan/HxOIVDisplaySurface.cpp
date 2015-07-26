@@ -154,6 +154,8 @@ void HxOIVDisplaySurface::compute()
             //////////////////////////////////////////////////////
             // Normals
             //////////////////////////////////////////////////////
+	    // Make sure propper normals have been computed. TODO: Needs more efficient implementation
+            surface->computeNormalsPerVertexIndexed();
             m_p_vertexProperty->normal.setNum(surface->normals.size());
 
             SbVec3f* normal = m_p_vertexProperty->normal.startEditing();
