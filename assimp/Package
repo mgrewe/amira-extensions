@@ -1,5 +1,7 @@
 set PACKAGE {assimp}
 
+set LABELS {Deprecated}
+
 set LIBS { z }
 
 set DEFINES {

@@ -1,5 +1,7 @@
 set PACKAGE {hxassimp}
 
+set LABELS {Deprecated}
+
 set INCLUDES { ../assimp/include }
 
 set LIBS {
