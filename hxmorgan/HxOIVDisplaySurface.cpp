@@ -5,15 +5,14 @@
 #include <hxcore/HxMessage.h>
 #include <hxsurface/HxSurface.h>
 #include <hxfield/HxUniformColorField3.h>
-#include <hxsurface/HxSurfaceComplexScalarField.h>
+#include <hxsurface/HxSurfaceScalarField.h>
 
 #include <Inventor/nodes/SoSeparator.h>
+#include <Inventor/nodes/SoBBox.h>
 #include <Inventor/nodes/SoMaterial.h>
-#include <Inventor/nodes/SoCoordinate3.h>
-#include <Inventor/nodes/SoIndexedFaceSet.h>
-#include <Inventor/nodes/SoShapeHints.h>
-#include <Inventor/nodes/SoMaterialBinding.h>
 #include <Inventor/nodes/SoTexture2.h>
+#include <Inventor/nodes/SoBufferedShape.h>
+#include <Inventor/devices/SoCpuBufferObject.h>
 
 HX_INIT_CLASS(HxOIVDisplaySurface,HxModule)
 
@@ -21,7 +20,7 @@ HxOIVDisplaySurface::HxOIVDisplaySurface() :
     HxModule(HxSurface::getClassTypeId()),
     portEmissiveColor(this, "emissiveColor", tr("Emissive Color")),
     portTexture(this, "texture", tr("Texture"), HxUniformColorField3::getClassTypeId()),
-    portTextureCoord(this, "textureCoord", tr("Texture Coordinates"), HxSurfaceComplexScalarField::getClassTypeId())
+    portTextureCoord(this, "textureCoord", tr("Texture Coordinates"), HxSurfaceScalarField::getClassTypeId())
 {
     portEmissiveColor.setMinMax(0, 255);
     portEmissiveColor.setValue(0);
@@ -37,20 +36,27 @@ HxOIVDisplaySurface::HxOIVDisplaySurface() :
     m_p_root->addChild(m_p_material);
     
     m_p_texture = new SoTexture2;
-    //m_p_texture->internalFormat = 
     m_p_texture->model = SoTexture2::MODULATE;
     m_p_root->addChild(m_p_texture);
 
-    SoMaterialBinding* materialBinding = new SoMaterialBinding;
-    materialBinding->value = SoMaterialBinding::PER_FACE_INDEXED;
-    m_p_root->addChild(materialBinding);
-    
-    m_p_vertexProperty = new SoVertexProperty;
+    m_p_boundingBoxNode = new SoBBox;
+    m_p_boundingBoxNode->mode.setValue(SoBBox::USER_DEFINED);
+    m_p_root->addChild(m_p_boundingBoxNode);
 
-    m_p_faceSet = new SoIndexedFaceSet;
-    m_p_faceSet->vertexProperty.setValue(m_p_vertexProperty);
+    m_p_vertices = new SoGLBufferObject(SoGLBufferObject::DYNAMIC_DRAW);
+    m_p_normals = new SoGLBufferObject(SoGLBufferObject::STATIC_DRAW);
+    m_p_texcoords = new SoGLBufferObject(SoGLBufferObject::STATIC_DRAW);
+    m_p_indices = new SoGLBufferObject(SoGLBufferObject::STATIC_DRAW);
 
-    m_p_root->addChild(m_p_faceSet);
+    m_p_shape = new SoBufferedShape;
+    m_p_shape->shapeType = SoBufferedShape::TRIANGLES;
+    m_p_shape->indexType = SbDataType::UNSIGNED_INT32;
+    m_p_shape->normalBuffer = m_p_normals;
+    m_p_shape->vertexBuffer = m_p_vertices;
+    m_p_shape->indexBuffer = m_p_indices;
+    m_p_shape->texCoordsBuffer = m_p_texcoords;
+
+    m_p_root->addChild(m_p_shape);
 }
 
 HxOIVDisplaySurface::~HxOIVDisplaySurface()
@@ -91,19 +97,72 @@ void HxOIVDisplaySurface::compute()
     //////////////////////////////////////////////////////
     // Texture Coordinates
     //////////////////////////////////////////////////////
-    const HxSurfaceComplexScalarField* textureCoords = hxconnection_cast<HxSurfaceComplexScalarField>(portTextureCoord);
-    if (portTextureCoord.isNew() && textureCoords)
+    const HxSurfaceScalarField* textureCoords = hxconnection_cast<HxSurfaceScalarField>(portTextureCoord);
+    if (portTextureCoord.isNew() && textureCoords && textureCoords->nDataVar() == 2 && textureCoords->getEncoding() == HxSurfaceField::OnNodes)
     {
+        m_p_texcoords->setTarget(SoGLBufferObject::ARRAY_BUFFER);
+        m_p_texcoords->setSize(2 * textureCoords->nDataElements() * sizeof(float));
         const float* tc   = textureCoords->dataPtr();
-        m_p_vertexProperty->texCoord.setNum(textureCoords->nDataElements());
-        SbVec2f* uvptr = m_p_vertexProperty->texCoord.startEditing();
+        float* uvptr = (float *)m_p_texcoords->map( SoBufferObject::READ_WRITE );
         for (int i=0; i<textureCoords->nDataElements(); i++)
         {
-            SbVec2f & uv = uvptr[i];
-            uv[0] = tc[2*i+0];
-            uv[1] = 1.0f - tc[2*i+1];
+            *(uvptr++) = tc[2*i+0];
+            *(uvptr++) = 1.0f - tc[2*i+1];
         }
-        m_p_vertexProperty->texCoord.finishEditing();
+        m_p_texcoords->unmap();
+    }
+
+    if (portData.isNew(HxData::NEW_SOURCE)) 
+    {
+        HxSurface* surface = hxconnection_cast<HxSurface>(portData);
+        if (surface)
+        {
+            surface->computeNormalsPerVertexIndexed();
+            //////////////////////////////////////////////////////
+            // Bounding Box
+            //////////////////////////////////////////////////////
+            float bbox[6];
+            surface->getBoundingBox(bbox);
+            m_p_boundingBoxNode->boundingBox.setValue(bbox[0], bbox[2], bbox[4], bbox[1], bbox[3], bbox[5]);
+
+            //////////////////////////////////////////////////////
+            // Normals
+            //////////////////////////////////////////////////////
+            m_p_normals->setTarget(SoGLBufferObject::ARRAY_BUFFER);
+            m_p_normals->setSize( surface->normals.size() * sizeof(SbVec3f) );
+            float* normalsPtr = (float *)m_p_normals->map( SoBufferObject::READ_WRITE );
+            for (int i=0; i<surface->normals.size(); i++)
+            {
+                *(normalsPtr++) = surface->normals[i][0];
+                *(normalsPtr++) = surface->normals[i][1];
+                *(normalsPtr++) = surface->normals[i][2];
+            }
+            m_p_normals->unmap();
+
+            //////////////////////////////////////////////////////
+            // Indices
+            //////////////////////////////////////////////////////
+            m_p_indices->setTarget(SoGLBufferObject::ELEMENT_ARRAY_BUFFER);
+            m_p_indices->setSize(3 * surface->triangles.size() * sizeof(unsigned int));
+            unsigned int* indicesPtr = (unsigned int *)m_p_indices->map( SoBufferObject::READ_WRITE );
+            for (int i=0; i<surface->triangles.size(); i++)
+            {
+                const Surface::Triangle & tri = surface->triangles[i];
+
+                *(indicesPtr++) = tri.points[0];
+                *(indicesPtr++) = tri.points[1];
+                *(indicesPtr++) = tri.points[2];
+            }
+            m_p_indices->unmap();
+
+            m_p_shape->numVertices.set1Value( 0, 3 * surface->triangles.size() );
+
+            showGeom(m_p_root);
+        }
+        else
+        {
+            hideGeom(m_p_root);
+        }
     }
 
     if (portData.isNew())
@@ -111,99 +170,23 @@ void HxOIVDisplaySurface::compute()
         HxSurface* surface = hxconnection_cast<HxSurface>(portData);
         if (surface)
         {
-#if 0
-            //////////////////////////////////////////////////////
-            // Materials
-            //////////////////////////////////////////////////////
-            const HxParamBundle* materials = surface->parameters.materials();
-            const int nMaterials = materials->nBundles();
-
-            m_p_material->diffuseColor.setNum(nMaterials);
-            SbColor * matptr = m_p_material->diffuseColor.startEditing();
-
-            for (int k=0; k<surface->patches.size(); k++) 
-            {
-                const Surface::Patch* patch = surface->patches[k];
-
-                int innerRegion = patch->innerRegion;
-                if (innerRegion < nMaterials) 
-                {
-                    const HxParamBundle* b = materials->bundle(innerRegion);
-                    SbColor color;
-                    if (!b->findColor(&color[0]))
-                        color = matDatabase->getColor(qPrintable(b->name()));
-                    matptr[k] = color;
-                }
-            }
-            m_p_material->diffuseColor.finishEditing();
-#endif
             //////////////////////////////////////////////////////
             // Vertices
             //////////////////////////////////////////////////////
-            m_p_vertexProperty->vertex.setNum(surface->points.size());
-
-            SbVec3f* coords = m_p_vertexProperty->vertex.startEditing();
+            m_p_vertices->setTarget(SoGLBufferObject::ARRAY_BUFFER);
+            //m_p_vertices->bind();
+            m_p_vertices->setSize( surface->points.size() * sizeof(SbVec3f) );
+            float* verticesPtr = (float *)m_p_vertices->map( SoBufferObject::READ_WRITE );
             for (int i=0; i<surface->points.size(); i++)
             {
-                const McVec3f & pt = surface->points[i];
-
-                coords[i].setValue(pt.x, pt.y, pt.z); 
+                *(verticesPtr++) = surface->points[i][0];
+                *(verticesPtr++) = surface->points[i][1];
+                *(verticesPtr++) = surface->points[i][2];
             }
-            m_p_vertexProperty->vertex.finishEditing();
+            m_p_vertices->unmap();
+            //m_p_vertices->unbind();
 
-            //////////////////////////////////////////////////////
-            // Normals
-            //////////////////////////////////////////////////////
-	    // Make sure propper normals have been computed. TODO: Needs more efficient implementation
-            surface->computeNormalsPerVertexIndexed();
-            m_p_vertexProperty->normal.setNum(surface->normals.size());
-
-            SbVec3f* normal = m_p_vertexProperty->normal.startEditing();
-            for (int i=0; i<surface->normals.size(); i++)
-            {
-                const McVec3f & n = surface->normals[i];
-
-                normal[i].setValue(n.x, n.y, n.z); 
-            }
-            m_p_vertexProperty->normal.finishEditing();
-
-            if (surface->normals.size() == surface->triangles.size())
-                m_p_vertexProperty->normalBinding = SoVertexProperty::PER_FACE_INDEXED;
-            else
-                m_p_vertexProperty->normalBinding = SoVertexProperty::PER_VERTEX_INDEXED;
-
-            //theMsg->printf("vertices: %d normals: %d", surface->points.size(), surface->normals.size());
-
-            //////////////////////////////////////////////////////
-            // Coords Indexes
-            //////////////////////////////////////////////////////
-            m_p_faceSet->coordIndex.setNum(4*surface->triangles.size());
-            m_p_faceSet->materialIndex.setNum(surface->triangles.size());
-
-            int32_t* faceidx = m_p_faceSet->coordIndex.startEditing();
-            int32_t* matidx = m_p_faceSet->materialIndex.startEditing();
-            for (int i=0; i<surface->triangles.size(); i++)
-            {
-                const Surface::Triangle & tri = surface->triangles[i];
-
-                faceidx[4*i+0] = tri.points[0];
-                faceidx[4*i+1] = tri.points[1];
-                faceidx[4*i+2] = tri.points[2];
-                faceidx[4*i+3] = -1;
-
-                matidx[i] = tri.patch;
-            }
-            m_p_faceSet->coordIndex.finishEditing();
-            m_p_faceSet->materialIndex.finishEditing();
-
-            showGeom(m_p_root);
-        }
-        else
-        {
-            hideGeom(m_p_root);
-
-            m_p_vertexProperty->vertex.setNum(0);
-            m_p_faceSet->coordIndex.setNum(0);
+            m_p_shape->touch();
         }
     }
 }
