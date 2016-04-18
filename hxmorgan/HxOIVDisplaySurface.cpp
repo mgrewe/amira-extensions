@@ -5,7 +5,7 @@
 #include <hxcore/HxMessage.h>
 #include <hxsurface/HxSurface.h>
 #include <hxfield/HxUniformColorField3.h>
-#include <hxsurface/HxSurfaceComplexScalarField.h>
+#include <hxsurface/HxSurfaceScalarField.h>
 
 #include <Inventor/nodes/SoSeparator.h>
 #include <Inventor/nodes/SoBBox.h>
@@ -20,7 +20,7 @@ HxOIVDisplaySurface::HxOIVDisplaySurface() :
     HxModule(HxSurface::getClassTypeId()),
     portEmissiveColor(this, "emissiveColor", tr("Emissive Color")),
     portTexture(this, "texture", tr("Texture"), HxUniformColorField3::getClassTypeId()),
-    portTextureCoord(this, "textureCoord", tr("Texture Coordinates"), HxSurfaceComplexScalarField::getClassTypeId())
+    portTextureCoord(this, "textureCoord", tr("Texture Coordinates"), HxSurfaceScalarField::getClassTypeId())
 {
     portEmissiveColor.setMinMax(0, 255);
     portEmissiveColor.setValue(0);
@@ -97,8 +97,8 @@ void HxOIVDisplaySurface::compute()
     //////////////////////////////////////////////////////
     // Texture Coordinates
     //////////////////////////////////////////////////////
-    const HxSurfaceComplexScalarField* textureCoords = hxconnection_cast<HxSurfaceComplexScalarField>(portTextureCoord);
-    if (portTextureCoord.isNew() && textureCoords)
+    const HxSurfaceScalarField* textureCoords = hxconnection_cast<HxSurfaceScalarField>(portTextureCoord);
+    if (portTextureCoord.isNew() && textureCoords && textureCoords->nDataVar() == 2 && textureCoords->getEncoding() == HxSurfaceScalarField::OnNodes)
     {
         m_p_texcoords->setTarget(SoGLBufferObject::ARRAY_BUFFER);
         m_p_texcoords->setSize(2 * textureCoords->nDataElements() * sizeof(float));
